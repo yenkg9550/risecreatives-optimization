@@ -1,0 +1,102 @@
+/* Admin CSS */
+.risecreatives-wrap {
+    margin: 10px 20px 0 2px;
+}
+
+.risecreatives-header {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-radius: 4px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+.risecreatives-header h1 {
+    margin: 0;
+    color: #23282d;
+    font-size: 24px;
+    font-weight: 400;
+}
+
+.risecreatives-content {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-radius: 4px;
+    padding: 20px;
+}
+
+.risecreatives-form-table {
+    margin-top: 20px;
+}
+
+.risecreatives-form-table th {
+    padding: 20px 10px 20px 0;
+    width: 200px;
+}
+
+.risecreatives-form-table td {
+    padding: 15px 10px;
+}
+
+.risecreatives-switch {
+    position: relative;
+    display: inline-block;
+    width: 60px;
+    height: 34px;
+}
+
+.risecreatives-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.risecreatives-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: .4s;
+    border-radius: 34px;
+}
+
+.risecreatives-slider:before {
+    position: absolute;
+    content: "";
+    height: 26px;
+    width: 26px;
+    left: 4px;
+    bottom: 4px;
+    background-color: white;
+    transition: .4s;
+    border-radius: 50%;
+}
+
+input:checked + .risecreatives-slider {
+    background-color: #2271b1;
+}
+
+input:checked + .risecreatives-slider:before {
+    transform: translateX(26px);
+}
+
+.risecreatives-notice {
+    padding: 15px;
+    margin: 5px 0 15px;
+    border-radius: 4px;
+}
+
+.risecreatives-notice-success {
+    background-color: #dff0d8;
+    border: 1px solid #d6e9c6;
+    color: #3c763d;
+}
+
+.risecreatives-notice-error {
+    background-color: #f2dede;
+    border: 1px solid #ebccd1;
+    color: #a94442;
+}
