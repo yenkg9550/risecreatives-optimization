@@ -13,3 +13,14 @@ delete_option('risecreatives_opt_performance_hash');
 delete_option('risecreatives_image_sizes_restored');
 delete_option('risecreatives_opt_editor');
 delete_option('risecreatives_opt_performance');
+delete_option('risecreatives_opt_updater');
+delete_transient('risecreatives_opt_update_info');
+delete_option('risecreatives_htaccess_sync_failed');
+
+// 移除 .htaccess 中的安全標頭規則
+require_once ABSPATH . 'wp-admin/includes/file.php';
+require_once ABSPATH . 'wp-admin/includes/misc.php';
+$risecreatives_htaccess = get_home_path() . '.htaccess';
+if (file_exists($risecreatives_htaccess) && is_writable($risecreatives_htaccess)) {
+    insert_with_markers($risecreatives_htaccess, 'RiseCreatives Security Headers', []);
+}

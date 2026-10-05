@@ -3,7 +3,8 @@
  * Plugin Name: RiseCreatives Optimization
  * Plugin URI: https://www.risecreatives.co
  * Description: 展躍網路客製化優化外掛，提供多種WordPress優化功能
- * Version: 1.3.0
+ * Version: 1.3.1
+ * Update URI: https://www.risecreatives.co
  * Author: RiseCreatives 展躍網路
  * Author URI: https://www.risecreatives.co
  * License: GPL v2 or later
@@ -16,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // 定義外掛常數
-define('RISECREATIVES_OPT_VERSION', '1.3.0');
+define('RISECREATIVES_OPT_VERSION', '1.3.1');
 define('RISECREATIVES_OPT_PATH', plugin_dir_path(__FILE__));
 define('RISECREATIVES_OPT_URL', plugin_dir_url(__FILE__));
 define('RISECREATIVES_OPT_BASENAME', plugin_basename(__FILE__));
@@ -100,12 +101,19 @@ class RiseCreatives_Optimization {
             require_once RISECREATIVES_OPT_PATH . 'includes/class-editor-settings.php';
         }, 5);
 
+        // 載入更新檢查（GitHub Releases）
+        add_action('plugins_loaded', function() {
+            require_once RISECREATIVES_OPT_PATH . 'includes/class-updater.php';
+        }, 5);
+
         // 啟用與停用鉤子
         register_activation_hook(__FILE__, [$this, 'activate']);
         register_deactivation_hook(__FILE__, [$this, 'deactivate']);
 
         // 初始化後台選單
         add_action('admin_menu', [$this, 'init_admin_menu']);
+        // 所有子選單（含其他類別新增的）註冊完成後，統一調整順序
+        add_action('admin_menu', [$this, 'reorder_submenu'], 999);
         
         // 載入語系檔
         add_action('plugins_loaded', [$this, 'load_textdomain']);
@@ -141,6 +149,11 @@ class RiseCreatives_Optimization {
      * 外掛停用時執行
      */
     public function deactivate() {
+        // 移除 .htaccess 中的安全標頭規則，避免停用後舊標頭仍然生效
+        if (class_exists('RiseCreatives_Security_Headers')) {
+            RiseCreatives_Security_Headers::remove_htaccess_rules();
+        }
+
         flush_rewrite_rules();
     }
 
@@ -267,13 +280,64 @@ class RiseCreatives_Optimization {
 
         add_submenu_page(
             'risecreatives-optimization',
-            __('效能監控', 'risecreatives-optimization'),
-            __('效能監控', 'risecreatives-optimization'),
+            __('效能設定', 'risecreatives-optimization'),
+            __('效能設定', 'risecreatives-optimization'),
             'manage_options',
             'risecreatives-optimization-performance',
             [$this, 'render_performance_page']
         );
 
+        add_submenu_page(
+            'risecreatives-optimization',
+            __('版本資訊', 'risecreatives-optimization'),
+            __('版本資訊', 'risecreatives-optimization'),
+            'manage_options',
+            'risecreatives-optimization-version',
+            [$this, 'render_version_page']
+        );
+
+    }
+
+    /**
+     * 調整後台子選單順序：
+     * 框架管理 -> 上傳限制 -> 一般設定 -> 效能設定 -> 編輯器設定 -> 版本資訊
+     */
+    public function reorder_submenu() {
+        global $submenu;
+
+        $parent = 'risecreatives-optimization';
+        if (empty($submenu[$parent]) || !is_array($submenu[$parent])) {
+            return;
+        }
+
+        $order = [
+            'risecreatives-optimization-scripts',      // 框架管理
+            'risecreatives-upload-restrictions',       // 上傳限制
+            'risecreatives-optimization',              // 一般設定
+            'risecreatives-optimization-performance',  // 效能設定
+            'risecreatives-optimization-editor',       // 編輯器設定
+            'risecreatives-optimization-version',      // 版本資訊
+        ];
+
+        $items = [];
+        foreach ($submenu[$parent] as $item) {
+            $items[$item[2]] = $item;
+        }
+
+        $sorted = [];
+        foreach ($order as $slug) {
+            if (isset($items[$slug])) {
+                $sorted[] = $items[$slug];
+                unset($items[$slug]);
+            }
+        }
+
+        // 未列在順序中的項目（例如日後新增的）放在最後
+        foreach ($items as $item) {
+            $sorted[] = $item;
+        }
+
+        $submenu[$parent] = $sorted;
     }
 
     /**
@@ -337,6 +401,10 @@ class RiseCreatives_Optimization {
 
     public function render_performance_page() {
         require_once RISECREATIVES_OPT_PATH . 'templates/admin-performance.php';
+    }
+
+    public function render_version_page() {
+        require_once RISECREATIVES_OPT_PATH . 'templates/admin-version.php';
     }
 }
 

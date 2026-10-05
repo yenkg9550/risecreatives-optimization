@@ -233,45 +233,6 @@ settings_errors('performance_settings');
                 </td>
             </tr>
 
-            <!-- 系統資訊 -->
-            <tr>
-                <th scope="row"><?php _e('系統資訊', 'risecreatives-optimization'); ?></th>
-                <td>
-                    <div class="risecreatives-system-info">
-                        <p>
-                            <strong><?php _e('PHP 版本：', 'risecreatives-optimization'); ?></strong>
-                            <?php echo PHP_VERSION; ?>
-                        </p>
-                        <p>
-                            <strong><?php _e('WordPress 版本：', 'risecreatives-optimization'); ?></strong>
-                            <?php echo get_bloginfo('version'); ?>
-                        </p>
-                        <p>
-                            <strong><?php _e('記憶體限制：', 'risecreatives-optimization'); ?></strong>
-                            <?php 
-                            // 獲取 WordPress 的實際記憶體限制
-                            $wp_memory_limit = wp_convert_hr_to_bytes( WP_MEMORY_LIMIT );
-                            $wp_max_memory_limit = wp_convert_hr_to_bytes( WP_MAX_MEMORY_LIMIT );
-                            
-                            // 獲取 PHP 的記憶體限制
-                            $php_memory_limit = wp_convert_hr_to_bytes( ini_get('memory_limit') );
-                            
-                            // 使用最大值
-                            $actual_memory_limit = max($wp_memory_limit, $wp_max_memory_limit, $php_memory_limit);
-                            echo size_format($actual_memory_limit);
-                            ?>
-                        </p>
-                        <p>
-                            <strong><?php _e('最大執行時間：', 'risecreatives-optimization'); ?></strong>
-                            <?php echo ini_get('max_execution_time'); ?> <?php _e('秒', 'risecreatives-optimization'); ?>
-                        </p>
-                        <p>
-                            <strong><?php _e('上傳檔案大小限制：', 'risecreatives-optimization'); ?></strong>
-                            <?php echo ini_get('upload_max_filesize'); ?>
-                        </p>
-                    </div>
-                </td>
-            </tr>
         </table>
 
         <h2 class="title"><?php _e('進階優化選項', 'risecreatives-optimization'); ?></h2>
