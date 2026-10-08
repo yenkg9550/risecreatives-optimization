@@ -2,7 +2,7 @@
 
 展躍網路客製化 WordPress 優化外掛。把常用的效能優化、上傳限制、前端框架載入等設定整合在同一個外掛的後台選單「**展躍系統**」中，不必每個網站各裝一堆小外掛。
 
-- 目前版本：**v1.3.1**
+- 目前版本：**v1.3.2**
 
 ---
 
@@ -17,6 +17,7 @@
 | 一般設定 | 登入頁 Logo、`[risecreatives_copyright]` 版權短代碼 |
 | 效能設定 | Emoji、預設圖片尺寸、修訂版本數量、XML-RPC、REST API、Heartbeat、oEmbed、前台 Dashicons／jQuery Migrate／區塊樣式、版本查詢參數等優化開關 |
 | 編輯器設定 | 停用 Gutenberg，改用傳統編輯器與傳統小工具 |
+| 備份管理 | 自動／手動備份資料庫與檔案，可存在本機、GitHub（私有儲存庫）或 Google Drive，支援下載、刪除與一鍵還原 |
 | 版本資訊 | 顯示目前／最新版本、檢查與執行更新、設定更新來源、系統資訊 |
 
 另外，外掛會輸出一組安全標頭（HSTS、CSP、Referrer-Policy、Permissions-Policy 等）。

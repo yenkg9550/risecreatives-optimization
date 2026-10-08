@@ -14,6 +14,11 @@ delete_option('risecreatives_image_sizes_restored');
 delete_option('risecreatives_opt_editor');
 delete_option('risecreatives_opt_performance');
 delete_option('risecreatives_opt_updater');
+
+// 備份設定與排程（已建立的備份檔保留在 wp-content/risecreatives-backups-*，不會自動刪除）
+delete_option('risecreatives_opt_backup');
+delete_option('risecreatives_opt_backup_dir');
+wp_clear_scheduled_hook('risecreatives_opt_backup_cron');
 delete_transient('risecreatives_opt_update_info');
 delete_option('risecreatives_htaccess_sync_failed');
 

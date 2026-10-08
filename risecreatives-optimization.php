@@ -3,7 +3,7 @@
  * Plugin Name: RiseCreatives Optimization
  * Plugin URI: https://www.risecreatives.co
  * Description: 展躍網路客製化優化外掛，提供多種WordPress優化功能
- * Version: 1.3.1
+ * Version: 1.3.2
  * Update URI: https://www.risecreatives.co
  * Author: RiseCreatives 展躍網路
  * Author URI: https://www.risecreatives.co
@@ -17,7 +17,7 @@ if (!defined('ABSPATH')) {
 }
 
 // 定義外掛常數
-define('RISECREATIVES_OPT_VERSION', '1.3.1');
+define('RISECREATIVES_OPT_VERSION', '1.3.2');
 define('RISECREATIVES_OPT_PATH', plugin_dir_path(__FILE__));
 define('RISECREATIVES_OPT_URL', plugin_dir_url(__FILE__));
 define('RISECREATIVES_OPT_BASENAME', plugin_basename(__FILE__));
@@ -106,6 +106,11 @@ class RiseCreatives_Optimization {
             require_once RISECREATIVES_OPT_PATH . 'includes/class-updater.php';
         }, 5);
 
+        // 載入備份管理
+        add_action('plugins_loaded', function() {
+            require_once RISECREATIVES_OPT_PATH . 'includes/class-backup.php';
+        }, 5);
+
         // 啟用與停用鉤子
         register_activation_hook(__FILE__, [$this, 'activate']);
         register_deactivation_hook(__FILE__, [$this, 'deactivate']);
@@ -153,6 +158,9 @@ class RiseCreatives_Optimization {
         if (class_exists('RiseCreatives_Security_Headers')) {
             RiseCreatives_Security_Headers::remove_htaccess_rules();
         }
+
+        // 停用時取消自動備份排程（已建立的備份檔會保留）
+        wp_clear_scheduled_hook('risecreatives_opt_backup_cron');
 
         flush_rewrite_rules();
     }
@@ -289,6 +297,15 @@ class RiseCreatives_Optimization {
 
         add_submenu_page(
             'risecreatives-optimization',
+            __('備份管理', 'risecreatives-optimization'),
+            __('備份管理', 'risecreatives-optimization'),
+            'manage_options',
+            'risecreatives-optimization-backup',
+            [$this, 'render_backup_page']
+        );
+
+        add_submenu_page(
+            'risecreatives-optimization',
             __('版本資訊', 'risecreatives-optimization'),
             __('版本資訊', 'risecreatives-optimization'),
             'manage_options',
@@ -300,7 +317,7 @@ class RiseCreatives_Optimization {
 
     /**
      * 調整後台子選單順序：
-     * 框架管理 -> 上傳限制 -> 一般設定 -> 效能設定 -> 編輯器設定 -> 版本資訊
+     * 框架管理 -> 上傳限制 -> 一般設定 -> 效能設定 -> 編輯器設定 -> 備份管理 -> 版本資訊
      */
     public function reorder_submenu() {
         global $submenu;
@@ -316,6 +333,7 @@ class RiseCreatives_Optimization {
             'risecreatives-optimization',              // 一般設定
             'risecreatives-optimization-performance',  // 效能設定
             'risecreatives-optimization-editor',       // 編輯器設定
+            'risecreatives-optimization-backup',       // 備份管理
             'risecreatives-optimization-version',      // 版本資訊
         ];
 
@@ -401,6 +419,10 @@ class RiseCreatives_Optimization {
 
     public function render_performance_page() {
         require_once RISECREATIVES_OPT_PATH . 'templates/admin-performance.php';
+    }
+
+    public function render_backup_page() {
+        require_once RISECREATIVES_OPT_PATH . 'templates/admin-backup.php';
     }
 
     public function render_version_page() {
