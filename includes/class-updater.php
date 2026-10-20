@@ -15,7 +15,7 @@ if (!defined('ABSPATH')) {
  * - Release 的 tag 名稱即版本號，例如 v1.3.1 或 1.3.1。
  *
  * 也可在 wp-config.php 以常數設定（優先於後台設定）：
- *   define('RISECREATIVES_GITHUB_REPO',  'owner/repo');
+ *   define('RISECREATIVES_GITHUB_REPO',  'owner/repo');  // 沒設定時預設為 yenkg9550/risecreatives-optimization
  *   define('RISECREATIVES_GITHUB_TOKEN', 'ghp_xxx');  // 私有儲存庫才需要
  */
 class RiseCreatives_Optimization_Updater {
@@ -26,6 +26,7 @@ class RiseCreatives_Optimization_Updater {
     const CACHE_TTL   = 43200; // 12 小時
     const ERROR_TTL   = 3600;  // 查詢失敗時 1 小時內不重試，避免頻繁請求 GitHub
     const SLUG        = 'risecreatives-optimization';
+    const DEFAULT_REPO = 'yenkg9550/risecreatives-optimization'; // 沒有設定儲存庫時使用
 
     public static function get_instance() {
         if (null === self::$instance) {
@@ -70,7 +71,10 @@ class RiseCreatives_Optimization_Updater {
             $repo = RISECREATIVES_GITHUB_REPO;
         } else {
             $saved = $this->get_saved_settings();
-            $repo  = isset($saved['repo']) ? $saved['repo'] : '';
+            $repo  = isset($saved['repo']) ? (string) $saved['repo'] : '';
+            if (trim($repo) === '') {
+                $repo = self::DEFAULT_REPO;
+            }
         }
 
         return $this->normalize_repo($repo);

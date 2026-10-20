@@ -6,6 +6,12 @@ if (!defined('ABSPATH')) {
 }
 
 /**
+ * 使用者在備份途中按下「取消」時丟出，用來中止備份流程
+ */
+class RiseCreatives_Backup_Cancelled extends Exception {
+}
+
+/**
  * 備份管理
  *
  * - 備份內容（可勾選）：資料庫、上傳檔案、外掛、主題，打包成單一 ZIP。
@@ -15,6 +21,8 @@ if (!defined('ABSPATH')) {
  * - 手動：立即備份、下載、刪除、還原。
  *
  * 長時間作業（備份、還原）在背景執行，進度寫入備份資料夾內的 status.json，後台以 AJAX 輪詢顯示。
+ * 備份途中可暫停／繼續／取消：後台把指令寫入 control.json，背景程序在各步驟之間讀取並照做。
+ * （還原不提供暫停或取消，避免網站停在還原一半的狀態。）
  */
 class RiseCreatives_Optimization_Backup {
     private static $instance = null;
@@ -26,6 +34,10 @@ class RiseCreatives_Optimization_Backup {
     const STALE_AFTER = 900; // 執行中但超過 15 分鐘沒有進度，視為已中斷
 
     private $zip_batch = 300;
+
+    /** 目前執行中的備份是否接受暫停／取消指令 */
+    private $control_enabled = false;
+    private $control_checked = 0.0;
 
     public static function get_instance() {
         if (null === self::$instance) {
@@ -51,6 +63,11 @@ class RiseCreatives_Optimization_Backup {
         add_action('wp_ajax_risecreatives_backup_delete', array($this, 'ajax_delete'));
         add_action('wp_ajax_risecreatives_backup_test', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_risecreatives_backup_autosave', array($this, 'ajax_autosave'));
+        add_action('wp_ajax_risecreatives_backup_control', array($this, 'ajax_control'));
+
+        // 遠端上傳途中也能暫停／取消
+        add_action('risecreatives_backup_remote_tick', array($this, 'remote_tick'));
+        add_filter('risecreatives_backup_remote_should_abort', array($this, 'remote_should_abort'));
     }
 
     /* ------------------------------------------------------------------
@@ -75,7 +92,9 @@ class RiseCreatives_Optimization_Backup {
             'gdrive_client_id'     => '',
             'gdrive_client_secret' => '',
             'gdrive_refresh_token' => '',
-            'gdrive_folder_id'     => '',
+            'gdrive_folder_id'     => '', // 自動建立的「RiseCreatives Backups - 網域」資料夾
+            'gdrive_target'        => '', // 使用者指定的備份資料夾 ID（空字串表示自動建立）
+            'gdrive_scope'         => '', // 目前授權的範圍：file | full
             'keep_gdrive'          => 7,
         );
     }
@@ -184,12 +203,122 @@ class RiseCreatives_Optimization_Backup {
     }
 
     private function progress($step, $percent, $message) {
+        $this->check_control(true);
         $this->write_status(array(
             'state'   => 'running',
             'step'    => $step,
             'percent' => max(0, min(100, (int) $percent)),
             'message' => $message,
         ));
+    }
+
+    /* ------------------------------------------------------------------
+     * 暫停／繼續／取消（指令存在 control.json，與 status.json 分開，避免同時寫入互相覆蓋）
+     * ------------------------------------------------------------------ */
+
+    private function control_path() {
+        return $this->get_dir(false) . '/control.json';
+    }
+
+    /**
+     * 讀取目前的指令：pause | cancel | ''（空字串代表正常執行）
+     */
+    public function read_control() {
+        $file = $this->control_path();
+        clearstatcache(true, $file);
+        if (!is_file($file)) {
+            return '';
+        }
+        $data = json_decode((string) @file_get_contents($file), true);
+        $cmd  = is_array($data) && isset($data['cmd']) ? (string) $data['cmd'] : '';
+        return in_array($cmd, array('pause', 'cancel'), true) ? $cmd : '';
+    }
+
+    private function write_control($cmd) {
+        if ($cmd === '') {
+            $this->clear_control();
+            return;
+        }
+        $this->get_dir();
+        @file_put_contents($this->control_path(), wp_json_encode(array('cmd' => $cmd, 'at' => time())), LOCK_EX);
+    }
+
+    private function clear_control() {
+        $file = $this->control_path();
+        if (is_file($file)) {
+            @unlink($file);
+        }
+    }
+
+    /**
+     * 在備份的各個步驟之間呼叫：
+     * - 要求取消：丟出 RiseCreatives_Backup_Cancelled，由 run_backup() 清掉暫存檔
+     * - 要求暫停：停在這裡等候（定期更新狀態，避免被判定為已中斷），直到繼續或取消
+     *
+     * @param bool $force false 時每秒最多檢查一次（用在逐檔案的迴圈裡）
+     */
+    private function check_control($force = false) {
+        if (!$this->control_enabled) {
+            return;
+        }
+        $now = microtime(true);
+        if (!$force && $now - $this->control_checked < 1) {
+            return;
+        }
+        $this->control_checked = $now;
+
+        $cmd = $this->read_control();
+        if ($cmd === 'cancel') {
+            throw new RiseCreatives_Backup_Cancelled('使用者取消');
+        }
+        if ($cmd !== 'pause') {
+            return;
+        }
+
+        $st  = $this->read_status_raw($this->get_dir());
+        $msg = isset($st['message']) ? (string) $st['message'] : '';
+        $this->write_status(array(
+            'paused'    => true,
+            'paused_at' => time(),
+            'message'   => '已暫停' . ($msg !== '' ? '（' . $msg . '）' : ''),
+        ));
+
+        $ticks = 0;
+        while (true) {
+            sleep(2);
+            $cmd = $this->read_control();
+            if ($cmd === 'cancel') {
+                $this->write_status(array('paused' => false));
+                throw new RiseCreatives_Backup_Cancelled('使用者取消');
+            }
+            if ($cmd !== 'pause') {
+                break;
+            }
+            if (++$ticks % 15 === 0) {
+                $this->write_status(array()); // 心跳：每 30 秒更新一次時間
+            }
+        }
+
+        $this->write_status(array('paused' => false, 'paused_at' => 0, 'message' => $msg));
+        $this->control_checked = microtime(true);
+    }
+
+    /** 遠端上傳的迴圈中呼叫（Google Drive 每個分段） */
+    public function remote_tick() {
+        $this->check_control();
+    }
+
+    /** GitHub 單次上傳途中，取消時中斷連線 */
+    public function remote_should_abort($abort) {
+        if ($abort || !$this->control_enabled) {
+            return $abort;
+        }
+        $now = microtime(true);
+        if ($now - $this->control_checked < 1) {
+            return false;
+        }
+        $this->control_checked = $now;
+        return $this->read_control() === 'cancel';
     }
 
     /* ------------------------------------------------------------------
@@ -276,7 +405,9 @@ class RiseCreatives_Optimization_Backup {
             'message'  => '排程備份開始',
             'backup'   => '',
             'error'    => '',
+            'paused'   => false,
         ));
+        $this->clear_control();
         $this->run_backup('auto');
     }
 
@@ -407,6 +538,12 @@ class RiseCreatives_Optimization_Backup {
         $this->prepare_environment();
         $this->register_failure_handler('備份');
 
+        // 還原前的安全備份屬於還原流程，不接受暫停／取消
+        $this->control_enabled = $trigger !== 'pre_restore';
+        if ($this->control_enabled) {
+            $this->clear_control();
+        }
+
         $dir  = $this->get_dir();
         $tmp  = array();
         $base = '';
@@ -446,6 +583,7 @@ class RiseCreatives_Optimization_Backup {
                 'backup'   => $base,
                 'error'    => '',
                 'finished' => 0,
+                'paused'   => false,
             ));
 
             $contents = array();
@@ -524,6 +662,9 @@ class RiseCreatives_Optimization_Backup {
 
             // 5. 保留份數
             $this->progress('retention', 97, '清理舊備份');
+            // 開始刪除舊備份後就不能再取消（否則新舊備份可能都沒了）
+            $this->control_enabled = false;
+            $this->clear_control();
             $this->apply_retention($s);
 
             $notes = array();
@@ -550,7 +691,26 @@ class RiseCreatives_Optimization_Backup {
             ));
 
             return $base;
+        } catch (RiseCreatives_Backup_Cancelled $e) {
+            $this->control_enabled = false;
+            $this->clear_control();
+            $this->cleanup_tmp($tmp);
+            if ($base !== '') {
+                @unlink($this->zip_path($base));
+                @unlink($this->meta_path($base));
+            }
+            $this->write_status(array(
+                'state'    => 'cancelled',
+                'kind'     => 'backup',
+                'paused'   => false,
+                'finished' => time(),
+                'message'  => '備份已取消，暫存檔已清除。',
+                'error'    => '',
+            ));
+            return false;
         } catch (Throwable $e) {
+            $this->control_enabled = false;
+            $this->clear_control();
             $this->cleanup_tmp($tmp);
             if ($base !== '') {
                 @unlink($this->zip_path($base));
@@ -559,6 +719,7 @@ class RiseCreatives_Optimization_Backup {
             $this->write_status(array(
                 'state'    => 'failed',
                 'kind'     => $trigger === 'pre_restore' ? 'restore' : 'backup',
+                'paused'   => false,
                 'finished' => time(),
                 'message'  => '備份失敗：' . $e->getMessage(),
                 'error'    => $e->getMessage(),
@@ -617,6 +778,7 @@ class RiseCreatives_Optimization_Backup {
         );
 
         foreach ($iterator as $file) {
+            $this->check_control();
             if (!$file->isFile()) {
                 continue;
             }
@@ -689,6 +851,17 @@ class RiseCreatives_Optimization_Backup {
 
         foreach ($list as $i => $item) {
             list($path, $entry) = $item;
+
+            try {
+                $this->check_control();
+            } catch (RiseCreatives_Backup_Cancelled $c) {
+                // 放棄尚未寫入的變更，暫存的 .part 檔由 run_backup() 刪除
+                if (method_exists($zip, 'unchangeAll')) {
+                    @$zip->unchangeAll();
+                }
+                @$zip->close();
+                throw $c;
+            }
 
             if (!is_readable($path)) {
                 $skipped++;
@@ -769,9 +942,14 @@ class RiseCreatives_Optimization_Backup {
         }
 
         $count = count($tables);
-        foreach ($tables as $n => $table) {
-            $this->progress('db', 3 + (int) (($n / $count) * 11), '匯出資料表 ' . $table);
-            $this->dump_table($fh, $table);
+        try {
+            foreach ($tables as $n => $table) {
+                $this->progress('db', 3 + (int) (($n / $count) * 11), '匯出資料表 ' . $table);
+                $this->dump_table($fh, $table);
+            }
+        } catch (Throwable $e) {
+            fclose($fh);
+            throw $e;
         }
 
         fwrite($fh, "SET FOREIGN_KEY_CHECKS=1;\n");
@@ -823,6 +1001,7 @@ class RiseCreatives_Optimization_Backup {
         $offset = 0;
 
         while (true) {
+            $this->check_control();
             if ($qpk !== '') {
                 $cond = $last === null ? $where : $where . " AND $qpk > '" . $this->sql_escape((string) $last) . "'";
                 $sql  = "SELECT * FROM $qt WHERE $cond ORDER BY $qpk ASC LIMIT $batch";
@@ -894,19 +1073,36 @@ class RiseCreatives_Optimization_Backup {
         }
 
         $i = 0;
-        foreach ($dests as $key => $class) {
-            $i++;
-            $this->progress('remote', 93 + $i, '上傳到 ' . ($key === 'github' ? 'GitHub' : 'Google Drive'));
-            try {
-                $result = call_user_func(array($class, 'upload'), $zip, $name, $s);
-                $meta['remote'][$key] = array_merge(array('status' => 'ok', 'at' => time()), $result);
-                if ($key === 'gdrive' && !empty($result['folder_id']) && $result['folder_id'] !== $s['gdrive_folder_id']) {
-                    $s['gdrive_folder_id'] = $result['folder_id'];
-                    $this->save_settings($s);
+        try {
+            foreach ($dests as $key => $class) {
+                $i++;
+                $this->progress('remote', 93 + $i, '上傳到 ' . ($key === 'github' ? 'GitHub' : 'Google Drive'));
+                try {
+                    $result = call_user_func(array($class, 'upload'), $zip, $name, $s);
+                    $meta['remote'][$key] = array_merge(array('status' => 'ok', 'at' => time()), $result);
+                    if ($key === 'gdrive' && empty($s['gdrive_target']) && !empty($result['folder_id']) && $result['folder_id'] !== $s['gdrive_folder_id']) {
+                        $s['gdrive_folder_id'] = $result['folder_id'];
+                        $this->save_settings($s);
+                    }
+                } catch (RiseCreatives_Backup_Cancelled $c) {
+                    throw $c;
+                } catch (Throwable $e) {
+                    // 上傳因取消而中斷時，視為取消而不是上傳失敗
+                    $this->check_control(true);
+                    $meta['remote'][$key] = array('status' => 'failed', 'at' => time(), 'error' => $e->getMessage());
                 }
-            } catch (Throwable $e) {
-                $meta['remote'][$key] = array('status' => 'failed', 'at' => time(), 'error' => $e->getMessage());
             }
+        } catch (RiseCreatives_Backup_Cancelled $c) {
+            // 取消：把這次已經上傳成功的遠端副本也一併刪除
+            foreach ($meta['remote'] as $dest => $info) {
+                if (isset($info['status']) && $info['status'] === 'ok') {
+                    try {
+                        $this->remote_delete($dest, $info, $s);
+                    } catch (Throwable $ignore) {
+                    }
+                }
+            }
+            throw $c;
         }
 
         return $meta;
@@ -1328,12 +1524,29 @@ class RiseCreatives_Optimization_Backup {
             // 換了 Client ID 就必須重新授權
             $new['gdrive_refresh_token'] = '';
             $new['gdrive_folder_id']     = '';
+            $new['gdrive_scope']         = '';
             $result = array('saved' => true, 'level' => 'warn', 'code' => 'gdrive_reauth', 'message' => '已儲存。Client ID 已變更，需要重新授權 Google Drive。');
         }
+        // 指定的備份資料夾（可貼網址或 ID）
+        if (isset($in['gdrive_target'])) {
+            $raw = trim((string) $in['gdrive_target']);
+            $tid = RiseCreatives_Backup_GDrive::parse_folder_id($raw);
+            if ($raw !== '' && $tid === '') {
+                if ($result['code'] === 'saved') {
+                    $result = array('saved' => true, 'level' => 'error', 'code' => 'gdrive_bad_folder', 'message' => '無法辨識這個 Google Drive 資料夾網址，資料夾未變更。請貼上像 https://drive.google.com/drive/folders/… 的網址。');
+                }
+            } else {
+                $new['gdrive_target'] = $tid;
+            }
+        }
+        if ($new['gdrive_target'] !== '' && $new['gdrive_refresh_token'] !== '' && $new['gdrive_scope'] !== 'full' && $result['code'] === 'saved') {
+            $result = array('saved' => true, 'level' => 'warn', 'code' => 'gdrive_need_full', 'message' => '已儲存。要備份到指定的資料夾，請按「重新授權」並允許存取 Google Drive。');
+        }
+
         if ($new['gdrive_enabled'] && $new['gdrive_refresh_token'] === '') {
             $new['gdrive_enabled'] = 0;
             if ($result['code'] === 'saved') {
-                $result = array('saved' => true, 'level' => 'warn', 'code' => 'gdrive_not_authorized', 'message' => '已儲存，但 Google Drive 尚未啟用：請先填寫 Client ID／Secret 並完成「授權 Google Drive」，再勾選。');
+                $result = array('saved' => true, 'level' => 'warn', 'code' => 'gdrive_not_authorized', 'message' => '已儲存，但 Google Drive 尚未啟用：請先填寫 Client ID／Secret 並按「授權」，再勾選。');
             }
         }
 
@@ -1365,6 +1578,8 @@ class RiseCreatives_Optimization_Backup {
             'has_gd_secret'    => $s['gdrive_client_secret'] !== '',
             'has_gd_client'    => $s['gdrive_client_id'] !== '' && $s['gdrive_client_secret'] !== '',
             'authorized'       => $s['gdrive_refresh_token'] !== '',
+            'gd_target'        => $s['gdrive_target'],
+            'gd_need_reauth'   => $s['gdrive_target'] !== '' && $s['gdrive_refresh_token'] !== '' && $s['gdrive_scope'] !== 'full',
             'next_run'         => $this->describe_next_run(),
         );
     }
@@ -1376,7 +1591,7 @@ class RiseCreatives_Optimization_Backup {
             return '未啟用';
         }
         $labels = array('daily' => '每天', 'weekly' => '每週', 'monthly' => '每月');
-        return wp_date(get_option('date_format') . ' ' . get_option('time_format'), $next)
+        return wp_date(RISECREATIVES_DATETIME_FORMAT, $next)
             . '（' . (isset($labels[$s['frequency']]) ? $labels[$s['frequency']] : '') . '，網站時區 ' . wp_timezone_string() . '）';
     }
 
@@ -1417,7 +1632,7 @@ class RiseCreatives_Optimization_Backup {
             $this->redirect_back('gdrive_no_client');
         }
 
-        $url = RiseCreatives_Backup_GDrive::auth_url($s['gdrive_client_id'], $this->get_gdrive_redirect_uri(), wp_create_nonce('risecreatives_gdrive_state'));
+        $url = RiseCreatives_Backup_GDrive::auth_url($s['gdrive_client_id'], $this->get_gdrive_redirect_uri(), wp_create_nonce('risecreatives_gdrive_state'), $s['gdrive_target'] !== '');
         wp_redirect($url); // 外部網址（Google）
         exit;
     }
@@ -1450,6 +1665,7 @@ class RiseCreatives_Optimization_Backup {
 
         $s['gdrive_refresh_token'] = $token['refresh_token'];
         $s['gdrive_folder_id']     = '';
+        $s['gdrive_scope']         = RiseCreatives_Backup_GDrive::scope_is_full(isset($token['scope']) ? $token['scope'] : '') ? 'full' : 'file';
         $this->save_settings($s);
         $this->redirect_back('gdrive_ok');
     }
@@ -1461,6 +1677,7 @@ class RiseCreatives_Optimization_Backup {
         $s = $this->get_settings();
         $s['gdrive_refresh_token'] = '';
         $s['gdrive_folder_id']     = '';
+        $s['gdrive_scope']         = '';
         $s['gdrive_enabled']       = 0;
         $this->save_settings($s);
         $this->redirect_back('gdrive_disconnected');
@@ -1534,7 +1751,9 @@ class RiseCreatives_Optimization_Backup {
             'message'  => '開始備份',
             'backup'   => '',
             'error'    => '',
+            'paused'   => false,
         ));
+        $this->clear_control();
 
         $this->respond_and_continue(array('started' => true));
         $this->run_backup('manual');
@@ -1563,7 +1782,9 @@ class RiseCreatives_Optimization_Backup {
             'message'  => '準備還原',
             'backup'   => $base,
             'error'    => '',
+            'paused'   => false,
         ));
+        $this->clear_control();
 
         $this->respond_and_continue(array('started' => true));
         $this->run_restore($base);
@@ -1572,7 +1793,43 @@ class RiseCreatives_Optimization_Backup {
 
     public function ajax_status() {
         $this->ajax_guard();
-        wp_send_json_success($this->read_status());
+        $st = $this->read_status();
+        $st['control'] = (isset($st['state']) && $st['state'] === 'running') ? $this->read_control() : '';
+        wp_send_json_success($st);
+    }
+
+    /**
+     * 備份途中的暫停／繼續／取消
+     */
+    public function ajax_control() {
+        $this->ajax_guard();
+
+        $cmd = isset($_POST['cmd']) ? sanitize_key(wp_unslash($_POST['cmd'])) : '';
+        if (!in_array($cmd, array('pause', 'resume', 'cancel'), true)) {
+            wp_send_json_error(array('message' => '未知的指令。'));
+        }
+
+        $st = $this->read_status();
+        if (!isset($st['state']) || $st['state'] !== 'running') {
+            wp_send_json_error(array('message' => '目前沒有進行中的備份。'));
+        }
+        if (!isset($st['kind']) || $st['kind'] !== 'backup') {
+            wp_send_json_error(array('message' => '還原進行中無法暫停或取消，以免網站停在還原一半的狀態。'));
+        }
+
+        $current = $this->read_control();
+        if ($current === 'cancel') {
+            wp_send_json_error(array('message' => '已在取消中，請稍候。'));
+        }
+
+        if ($cmd === 'resume') {
+            $this->write_control('');
+        } else {
+            $this->write_control($cmd);
+        }
+
+        $st['control'] = $this->read_control();
+        wp_send_json_success($st);
     }
 
     public function ajax_delete() {

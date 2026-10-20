@@ -29,7 +29,7 @@ $notices = [
 
 // 時間顯示（使用網站時區）
 $format_time = function ($timestamp) {
-    return $timestamp ? wp_date(get_option('date_format') . ' ' . get_option('time_format'), (int) $timestamp) : '—';
+    return $timestamp ? wp_date(RISECREATIVES_DATETIME_FORMAT, (int) $timestamp) : '—';
 };
 
 $performance_options = RiseCreatives_Optimization_Performance::get_instance()->get_options();
@@ -64,7 +64,7 @@ $performance_options = RiseCreatives_Optimization_Performance::get_instance()->g
                         <strong>v<?php echo esc_html($info['version']); ?></strong>
                         <?php if (!empty($info['published_at'])): ?>
                             <span class="description">
-                                （<?php echo esc_html(sprintf(__('發布於 %s', 'risecreatives-optimization'), wp_date(get_option('date_format'), strtotime($info['published_at'])))); ?>）
+                                （<?php echo esc_html(sprintf(__('發布於 %s', 'risecreatives-optimization'), wp_date(RISECREATIVES_DATE_FORMAT, strtotime($info['published_at'])))); ?>）
                             </span>
                         <?php endif; ?>
                     <?php endif; ?>
@@ -145,11 +145,12 @@ $performance_options = RiseCreatives_Optimization_Performance::get_instance()->g
                                id="github_repo"
                                name="github_repo"
                                class="regular-text"
-                               placeholder="owner/repo"
+                               placeholder="<?php echo esc_attr(RiseCreatives_Optimization_Updater::DEFAULT_REPO); ?>"
                                value="<?php echo esc_attr($status['repo']); ?>"
                                <?php disabled($updater->is_repo_locked()); ?>>
                         <p class="description">
                             <?php _e('格式為「owner/repo」，也可貼上完整的 GitHub 網址。外掛會讀取該儲存庫最新的 Release（tag 名稱即版本號，例如 v1.3.1），並使用 Release 附加的 ZIP 檔更新。', 'risecreatives-optimization'); ?>
+                            <br><?php echo esc_html(sprintf(__('留空會使用預設的 %s。', 'risecreatives-optimization'), RiseCreatives_Optimization_Updater::DEFAULT_REPO)); ?>
                         </p>
                         <?php if ($updater->is_repo_locked()): ?>
                             <p class="description"><?php _e('此欄位已由 wp-config.php 的 RISECREATIVES_GITHUB_REPO 常數鎖定。', 'risecreatives-optimization'); ?></p>

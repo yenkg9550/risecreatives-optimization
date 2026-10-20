@@ -152,6 +152,11 @@ class RiseCreatives_Backup_GitHub {
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT        => 3600,
             CURLOPT_CONNECTTIMEOUT => 30,
+            // 使用者在上傳途中按下取消時中斷連線
+            CURLOPT_NOPROGRESS       => false,
+            CURLOPT_PROGRESSFUNCTION => function () {
+                return apply_filters('risecreatives_backup_remote_should_abort', false) ? 1 : 0;
+            },
             CURLOPT_HTTPHEADER     => array(
                 'Accept: application/vnd.github+json',
                 'Authorization: Bearer ' . $token,
@@ -199,7 +204,8 @@ class RiseCreatives_Backup_GitHub {
 /**
  * 備份的遠端目的地：Google Drive
  *
- * 使用 OAuth（範圍 drive.file：只能存取本外掛自己建立的檔案與資料夾）。
+ * 使用 OAuth。未指定資料夾時只要求 drive.file（只能存取本外掛自己建立的檔案與資料夾）；
+ * 指定了備份資料夾時改要求 drive（完整存取），才能把檔案放進使用者自己建立的資料夾。
  * 設定方式：在 Google Cloud Console 建立「網頁應用程式」OAuth 用戶端，
  * 把後台頁面顯示的「已授權的重新導向 URI」加進去，再把 Client ID／Secret 填入後台並按「授權」。
  * 注意：OAuth 同意畫面若維持「測試中」，refresh token 7 天後就會失效，請將發布狀態改為「正式版（In production）」。
@@ -209,16 +215,84 @@ class RiseCreatives_Backup_GDrive {
 
     private static $access_cache = array();
 
-    public static function auth_url($client_id, $redirect_uri, $state) {
+    const SCOPE_FILE = 'https://www.googleapis.com/auth/drive.file';
+    const SCOPE_FULL = 'https://www.googleapis.com/auth/drive';
+
+    /**
+     * @param bool $full 是否要求完整的 Google Drive 存取權（備份到指定資料夾時需要）
+     */
+    public static function auth_url($client_id, $redirect_uri, $state, $full = false) {
         return 'https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query(array(
             'client_id'     => $client_id,
             'redirect_uri'  => $redirect_uri,
             'response_type' => 'code',
-            'scope'         => 'https://www.googleapis.com/auth/drive.file',
+            'scope'         => $full ? self::SCOPE_FULL : self::SCOPE_FILE,
             'access_type'   => 'offline',
             'prompt'        => 'consent',
             'state'         => $state,
         ), '', '&', PHP_QUERY_RFC3986);
+    }
+
+    /**
+     * 從資料夾網址或 ID 取出資料夾 ID；無法辨識時回傳空字串
+     * 支援：https://drive.google.com/drive/u/3/folders/ID、…/folders/ID?usp=sharing、open?id=ID、直接貼 ID
+     */
+    public static function parse_folder_id($input) {
+        $input = trim((string) $input);
+        if ($input === '') {
+            return '';
+        }
+        if (preg_match('#/folders/([A-Za-z0-9_-]{10,})#', $input, $m)) {
+            return $m[1];
+        }
+        if (preg_match('#[?&]id=([A-Za-z0-9_-]{10,})#', $input, $m)) {
+            return $m[1];
+        }
+        if (preg_match('#^[A-Za-z0-9_-]{10,}$#', $input)) {
+            return $input;
+        }
+        return '';
+    }
+
+    public static function folder_url($id) {
+        return $id !== '' ? 'https://drive.google.com/drive/folders/' . $id : '';
+    }
+
+    /** Google 回傳的 scope 字串是否包含完整的 Drive 存取權 */
+    public static function scope_is_full($scope) {
+        return (bool) preg_match('#(^|\s)https://www\.googleapis\.com/auth/drive(\s|$)#', (string) $scope);
+    }
+
+    /**
+     * 確認指定的資料夾存在、沒被丟到垃圾桶，而且授權的帳號可以在裡面新增檔案
+     *
+     * @return array id、name
+     */
+    private static function target_folder($s, $token) {
+        $id = (string) $s['gdrive_target'];
+        if (isset($s['gdrive_scope']) && $s['gdrive_scope'] !== 'full') {
+            throw new Exception('目前的授權只能存取外掛自己建立的資料夾。要備份到指定的資料夾，請在備份頁面按「重新授權」，並允許存取 Google Drive。');
+        }
+
+        $res  = self::request('GET', 'https://www.googleapis.com/drive/v3/files/' . rawurlencode($id) . '?supportsAllDrives=true&fields=id,name,mimeType,trashed,capabilities/canAddChildren', $token);
+        $code = (int) wp_remote_retrieve_response_code($res);
+        if ($code === 404) {
+            throw new Exception('找不到指定的 Google Drive 資料夾，或授權的 Google 帳號沒有存取權限。請確認資料夾網址，以及授權時選的是哪個 Google 帳號。');
+        }
+        if ($code !== 200) {
+            throw new Exception(self::google_error($res, '無法讀取指定的 Google Drive 資料夾'));
+        }
+        $data = json_decode(wp_remote_retrieve_body($res), true);
+        if (!is_array($data) || (isset($data['mimeType']) && $data['mimeType'] !== 'application/vnd.google-apps.folder')) {
+            throw new Exception('指定的 Google Drive 網址不是資料夾。');
+        }
+        if (!empty($data['trashed'])) {
+            throw new Exception('指定的 Google Drive 資料夾已被移到垃圾桶。');
+        }
+        if (isset($data['capabilities']['canAddChildren']) && !$data['capabilities']['canAddChildren']) {
+            throw new Exception('授權的 Google 帳號對指定的資料夾沒有編輯權限，無法上傳備份。');
+        }
+        return array('id' => $data['id'], 'name' => isset($data['name']) ? $data['name'] : '');
     }
 
     private static function google_error($res, $fallback) {
@@ -279,7 +353,7 @@ class RiseCreatives_Backup_GDrive {
                 'grant_type'    => 'refresh_token',
             ));
         } catch (Exception $e) {
-            throw new Exception($e->getMessage() . ' 授權可能已失效，請在備份頁面重新按「授權 Google Drive」。');
+            throw new Exception($e->getMessage() . ' 授權可能已失效，請在備份頁面按「重新授權」。');
         }
 
         self::$access_cache[$key] = array(
@@ -314,10 +388,21 @@ class RiseCreatives_Backup_GDrive {
         }
         $data  = json_decode(wp_remote_retrieve_body($res), true);
         $email = isset($data['user']['emailAddress']) ? $data['user']['emailAddress'] : '';
-        return '連線成功' . ($email ? '：' . $email : '');
+        $msg   = '連線成功' . ($email ? '：' . $email : '');
+        if (!empty($s['gdrive_target'])) {
+            $folder = self::target_folder($s, $token);
+            $msg   .= '；備份資料夾：' . ($folder['name'] !== '' ? $folder['name'] : $folder['id']);
+        }
+        return $msg;
     }
 
     private static function ensure_folder($s, $token) {
+        // 有指定資料夾就一律用它（找不到或沒權限時直接報錯，不會偷偷改放到別的地方）
+        if (!empty($s['gdrive_target'])) {
+            $folder = self::target_folder($s, $token);
+            return $folder['id'];
+        }
+
         $id = $s['gdrive_folder_id'];
         if ($id !== '') {
             $res = self::request('GET', 'https://www.googleapis.com/drive/v3/files/' . rawurlencode($id) . '?fields=id,trashed', $token);
@@ -362,7 +447,7 @@ class RiseCreatives_Backup_GDrive {
         $folder = self::ensure_folder($s, $token);
 
         // 取得續傳網址
-        $res = self::request('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id', $token, array(
+        $res = self::request('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id', $token, array(
             'Content-Type'            => 'application/json; charset=UTF-8',
             'X-Upload-Content-Type'   => 'application/zip',
             'X-Upload-Content-Length' => (string) $size,
@@ -387,6 +472,8 @@ class RiseCreatives_Backup_GDrive {
 
         try {
             while ($offset < $size) {
+                // 讓備份管理檢查是否要暫停或取消（取消時會丟出例外中止上傳）
+                do_action('risecreatives_backup_remote_tick');
                 fseek($fh, $offset);
                 $chunk = fread($fh, self::CHUNK);
                 $end   = $offset + strlen($chunk) - 1;
@@ -455,7 +542,7 @@ class RiseCreatives_Backup_GDrive {
             throw new Exception('缺少 Google Drive 檔案代碼。');
         }
         $token = self::access_token($s);
-        $res   = self::request('DELETE', 'https://www.googleapis.com/drive/v3/files/' . rawurlencode($info['id']), $token);
+        $res   = self::request('DELETE', 'https://www.googleapis.com/drive/v3/files/' . rawurlencode($info['id']) . '?supportsAllDrives=true', $token);
         $code  = (int) wp_remote_retrieve_response_code($res);
         if ($code !== 204 && $code !== 404 && $code !== 200) {
             throw new Exception(self::google_error($res, '刪除 Google Drive 上的備份失敗'));

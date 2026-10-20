@@ -3,7 +3,7 @@
  * Plugin Name: RiseCreatives Optimization
  * Plugin URI: https://www.risecreatives.co
  * Description: 展躍網路客製化優化外掛，提供多種WordPress優化功能
- * Version: 1.3.2
+ * Version: 1.3.3
  * Update URI: https://www.risecreatives.co
  * Author: RiseCreatives 展躍網路
  * Author URI: https://www.risecreatives.co
@@ -17,7 +17,10 @@ if (!defined('ABSPATH')) {
 }
 
 // 定義外掛常數
-define('RISECREATIVES_OPT_VERSION', '1.3.2');
+define('RISECREATIVES_OPT_VERSION', '1.3.3');
+// 後台顯示的日期格式：2026年10月20日 10:47
+define('RISECREATIVES_DATE_FORMAT', 'Y年n月j日');
+define('RISECREATIVES_DATETIME_FORMAT', 'Y年n月j日 H:i');
 define('RISECREATIVES_OPT_PATH', plugin_dir_path(__FILE__));
 define('RISECREATIVES_OPT_URL', plugin_dir_url(__FILE__));
 define('RISECREATIVES_OPT_BASENAME', plugin_basename(__FILE__));
